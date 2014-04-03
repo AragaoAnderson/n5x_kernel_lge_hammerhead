@@ -25,10 +25,24 @@
 #include <linux/debugfs.h>
 #include <linux/ctype.h>
 #endif
+#ifdef CONFIG_TOUCHSCREEN_PREVENT_SLEEP
+#include <linux/input/prevent_sleep.h>
+#ifdef CONFIG_TOUCHSCREEN_SWEEP2WAKE
+#include <linux/input/sweep2wake.h>
+#endif
+#ifdef CONFIG_TOUCHSCREEN_DOUBLETAP2WAKE
+#include <linux/input/doubletap2wake.h>
+#endif
+#endif
 
 #include <asm/system_info.h>
 
+#ifdef CONFIG_PWRKEY_SUSPEND
+#include <linux/qpnp/power-on.h>
+#endif
+
 #include "mdss_dsi.h"
+#include "mdss_mdp.h"
 
 #define DT_CMD_HDR 6
 #define GAMMA_COMPAT 11
@@ -41,13 +55,14 @@ DEFINE_LED_TRIGGER(bl_led_trigger);
 #if defined(CONFIG_BACKLIGHT_LM3630)
 extern void lm3630_lcd_backlight_set_level(int level);
 #endif
+extern void mdss_mdp_cmds_send(unsigned int on);
 
 static struct mdss_dsi_phy_ctrl phy_params;
 static struct mdss_panel_common_pdata *local_pdata;
 static struct work_struct send_cmds_work;
 struct mdss_panel_data *cmds_panel_data;
 static struct platform_driver this_driver;
-static struct kobject *module_kobj;
+struct kobject *module_kobj;
 
 void mdss_dsi_panel_pwm_cfg(struct mdss_dsi_ctrl_pdata *ctrl)
 {
@@ -177,6 +192,23 @@ static void mdss_dsi_panel_bklt_dcs(struct mdss_dsi_ctrl_pdata *ctrl, int level)
 void mdss_dsi_panel_reset(struct mdss_panel_data *pdata, int enable)
 {
 	struct mdss_dsi_ctrl_pdata *ctrl_pdata = NULL;
+#ifdef CONFIG_TOUCHSCREEN_PREVENT_SLEEP
+#if defined(CONFIG_TOUCHSCREEN_SWEEP2WAKE) || defined(CONFIG_TOUCHSCREEN_DOUBLETAP2WAKE)
+	bool prevent_sleep = false;
+#endif
+#if defined(CONFIG_TOUCHSCREEN_SWEEP2WAKE)
+	prevent_sleep = (s2w_switch > 0) && (s2w_s2sonly == 0);
+#endif
+#if defined(CONFIG_TOUCHSCREEN_DOUBLETAP2WAKE)
+	prevent_sleep = prevent_sleep || (dt2w_switch > 0);
+#endif
+	if (prevent_sleep && in_phone_call)
+		prevent_sleep = false;
+#endif
+#ifdef CONFIG_PWRKEY_SUSPEND
+	if (pwrkey_pressed)
+		prevent_sleep = false;
+#endif
 
 	if (pdata == NULL) {
 		pr_err("%s: Invalid input data\n", __func__);
@@ -234,14 +266,24 @@ void mdss_dsi_panel_reset(struct mdss_panel_data *pdata, int enable)
 			mdss_panel_id == PANEL_LGE_JDI_ORISE_CMD ||
 			mdss_panel_id == PANEL_LGE_JDI_NOVATEK_VIDEO ||
 			mdss_panel_id == PANEL_LGE_JDI_NOVATEK_CMD) {
-			if (gpio_is_valid(ctrl_pdata->disp_en_gpio))
-				gpio_set_value((ctrl_pdata->disp_en_gpio), 0);
-			usleep(20 * 1000);
-			gpio_set_value((ctrl_pdata->rst_gpio), 0);
+#ifdef CONFIG_TOUCHSCREEN_PREVENT_SLEEP
+			if (!prevent_sleep)
+#endif
+			{
+				if (gpio_is_valid(ctrl_pdata->disp_en_gpio))
+					gpio_set_value((ctrl_pdata->disp_en_gpio), 0);
+				usleep(20 * 1000);
+				gpio_set_value((ctrl_pdata->rst_gpio), 0);
+			}
 		} else {
-			gpio_set_value((ctrl_pdata->rst_gpio), 0);
-			if (gpio_is_valid(ctrl_pdata->disp_en_gpio))
-				gpio_set_value((ctrl_pdata->disp_en_gpio), 0);
+#ifdef CONFIG_TOUCHSCREEN_PREVENT_SLEEP
+			if (!prevent_sleep)
+#endif
+			{
+				gpio_set_value((ctrl_pdata->rst_gpio), 0);
+				if (gpio_is_valid(ctrl_pdata->disp_en_gpio))
+					gpio_set_value((ctrl_pdata->disp_en_gpio), 0);
+			}
 		}
 	}
 }
@@ -340,6 +382,24 @@ static int mdss_dsi_panel_on(struct mdss_panel_data *pdata)
 	struct mipi_panel_info *mipi;
 	struct mdss_dsi_ctrl_pdata *ctrl = NULL;
 
+#ifdef CONFIG_TOUCHSCREEN_PREVENT_SLEEP
+#if defined(CONFIG_TOUCHSCREEN_SWEEP2WAKE) || defined(CONFIG_TOUCHSCREEN_DOUBLETAP2WAKE)
+	bool prevent_sleep = false;
+#endif
+#if defined(CONFIG_TOUCHSCREEN_SWEEP2WAKE)
+	prevent_sleep = (s2w_switch > 0) && (s2w_s2sonly == 0);
+#endif
+#if defined(CONFIG_TOUCHSCREEN_DOUBLETAP2WAKE)
+	prevent_sleep = prevent_sleep || (dt2w_switch > 0);
+#endif
+	if (prevent_sleep && in_phone_call)
+		prevent_sleep = false;
+#endif
+#ifdef CONFIG_PWRKEY_SUSPEND
+	if (pwrkey_pressed)
+		prevent_sleep = false;
+#endif
+
 	if (pdata == NULL) {
 		pr_err("%s: Invalid input data\n", __func__);
 		return -EINVAL;
@@ -354,6 +414,10 @@ static int mdss_dsi_panel_on(struct mdss_panel_data *pdata)
 	if (local_pdata->on_cmds.cmd_cnt)
 		mdss_dsi_panel_cmds_send(ctrl, &local_pdata->on_cmds);
 
+#ifdef CONFIG_PWRKEY_SUSPEND
+	pwrkey_pressed = false;	
+#endif
+		
 	pr_info("%s\n", __func__);
 	return 0;
 }
@@ -362,7 +426,17 @@ static int mdss_dsi_panel_off(struct mdss_panel_data *pdata)
 {
 	struct mipi_panel_info *mipi;
 	struct mdss_dsi_ctrl_pdata *ctrl = NULL;
-
+#ifdef CONFIG_TOUCHSCREEN_PREVENT_SLEEP
+#if defined(CONFIG_TOUCHSCREEN_SWEEP2WAKE) || defined(CONFIG_TOUCHSCREEN_DOUBLETAP2WAKE)
+	bool prevent_sleep = false;
+#endif
+#if defined(CONFIG_TOUCHSCREEN_SWEEP2WAKE)
+	prevent_sleep = (s2w_switch > 0) && (s2w_s2sonly == 0);
+#endif
+#if defined(CONFIG_TOUCHSCREEN_DOUBLETAP2WAKE)
+	prevent_sleep = prevent_sleep || (dt2w_switch > 0);
+#endif
+#endif
 	if (pdata == NULL) {
 		pr_err("%s: Invalid input data\n", __func__);
 		return -EINVAL;
@@ -377,6 +451,15 @@ static int mdss_dsi_panel_off(struct mdss_panel_data *pdata)
 
 	if (!gpio_get_value(ctrl->disp_en_gpio))
 		return 0;
+
+#ifdef CONFIG_TOUCHSCREEN_PREVENT_SLEEP
+	if (prevent_sleep) {
+		ctrl->off_cmds.cmds[1].payload[0] = 0x11;
+	} else {
+		ctrl->off_cmds.cmds[1].payload[0] = 0x10;
+	}
+	pr_info("[prevent_touchscreen_sleep]: payload = %x \n", ctrl->off_cmds.cmds[1].payload[0]);
+#endif
 
 	if (ctrl->off_cmds.cmd_cnt)
 		mdss_dsi_panel_cmds_send(ctrl, &ctrl->off_cmds);
@@ -1134,12 +1217,11 @@ static int read_local_on_cmds(char *buf, size_t cmd)
 		return -EINVAL;
 	}
 
-	/* Skip last bit */
 	dlen = local_pdata->on_cmds.cmds[cmd].dchdr.dlen - 1;
 	if (!dlen)
 		return -ENOMEM;
 
-	/* Skip first bit */
+	/* don't print first and last bits */
 	for (i = 1; i < dlen; i++)
 		len += sprintf(buf + len, "%d ",
 			       local_pdata->on_cmds.cmds[cmd].payload[i]);
@@ -1177,7 +1259,7 @@ static int write_local_on_cmds(struct device *dev, const char *buf,
 	}
 
 	ctrl = container_of(cmds_panel_data, struct mdss_dsi_ctrl_pdata,
-			    panel_data);
+				panel_data);
 
 	/*
 	 * Last bit is not written because it's either fixed at 0x00 for
@@ -1187,10 +1269,8 @@ static int write_local_on_cmds(struct device *dev, const char *buf,
 	if (!dlen)
 		return -EINVAL;
 
-	/* Backup previous panel data */
 	prev_local_data = local_pdata;
 
-	/* Skip first bit again */
 	for (i = 1; i < dlen; i++) {
 		rc = sscanf(buf, "%u", &val);
 		if (rc != 1)
@@ -1203,14 +1283,9 @@ static int write_local_on_cmds(struct device *dev, const char *buf,
 		}
 
 		local_pdata->on_cmds.cmds[cmd].payload[i] = val;
-		/*
-		 * Duplicate positive/negative polarities for both,
-		 * white point and RGB values.
-		 */
+		/* white point value must be duplicated */
 		if (cmd == 5)
 			local_pdata->on_cmds.cmds[cmd].payload[i + 1] = val;
-		else
-			local_pdata->on_cmds.cmds[cmd + 2].payload[i] = val;
 
 		sscanf(buf, "%s", tmp);
 		buf += strlen(tmp) + 1;
@@ -1234,8 +1309,22 @@ static void send_local_on_cmds(struct work_struct *work)
 	ctrl = container_of(cmds_panel_data, struct mdss_dsi_ctrl_pdata,
 			    panel_data);
 
+	/* Prevent flicker during continous splash */
+	if (cmds_panel_data->panel_info.cont_splash_enabled)
+		return;
+
+	mdss_mdp_cmds_send(1);
+	gpio_set_value((ctrl->rst_gpio), 0);
+	udelay(200);
+	gpio_set_value((ctrl->rst_gpio), 1);
+	msleep(20);
+
+	if (ctrl->ctrl_state & CTRL_STATE_PANEL_INIT)
+		ctrl->ctrl_state &= ~CTRL_STATE_PANEL_INIT;
+
 	if (local_pdata->on_cmds.cmd_cnt)
 		mdss_dsi_panel_cmds_send(ctrl, &local_pdata->on_cmds);
+	mdss_mdp_cmds_send(0);
 
 	pr_info("%s\n", __func__);
 }
@@ -1265,10 +1354,13 @@ static ssize_t read_##file_name					\
 	return read_local_on_cmds(buf, cmd);			\
 }
 
-read_one(kgamma_w,  5);
-read_one(kgamma_r,  7);
-read_one(kgamma_g, 11);
-read_one(kgamma_b, 15);
+read_one(kgamma_w,   5);
+read_one(kgamma_rp,  7);
+read_one(kgamma_rn,  9);
+read_one(kgamma_gp, 11);
+read_one(kgamma_gn, 13);
+read_one(kgamma_bp, 15);
+read_one(kgamma_bn, 17);
 
 #define write_one(file_name, cmd)				\
 static ssize_t write_##file_name				\
@@ -1278,24 +1370,33 @@ static ssize_t write_##file_name				\
 	return write_local_on_cmds(dev, buf, cmd);		\
 }
 
-write_one(kgamma_w,  5);
-write_one(kgamma_r,  7);
-write_one(kgamma_g, 11);
-write_one(kgamma_b, 15);
+write_one(kgamma_w,   5);
+write_one(kgamma_rp,  7);
+write_one(kgamma_rn,  9);
+write_one(kgamma_gp, 11);
+write_one(kgamma_gn, 13);
+write_one(kgamma_bp, 15);
+write_one(kgamma_bn, 17);
 
 #define define_one_rw(_name)					\
 static DEVICE_ATTR(_name, 0644, read_##_name, write_##_name);
 
 define_one_rw(kgamma_w);
-define_one_rw(kgamma_r);
-define_one_rw(kgamma_g);
-define_one_rw(kgamma_b);
+define_one_rw(kgamma_rp);
+define_one_rw(kgamma_rn);
+define_one_rw(kgamma_gp);
+define_one_rw(kgamma_gn);
+define_one_rw(kgamma_bp);
+define_one_rw(kgamma_bn);
 
 static struct attribute *dsi_panel_attributes[] = {
 	&dev_attr_kgamma_w.attr,
-	&dev_attr_kgamma_r.attr,
-	&dev_attr_kgamma_g.attr,
-	&dev_attr_kgamma_b.attr,
+	&dev_attr_kgamma_rp.attr,
+	&dev_attr_kgamma_rn.attr,
+	&dev_attr_kgamma_gp.attr,
+	&dev_attr_kgamma_gn.attr,
+	&dev_attr_kgamma_bp.attr,
+	&dev_attr_kgamma_bn.attr,
 	&dev_attr_kgamma_send.attr,
 	NULL
 };
@@ -1311,8 +1412,8 @@ static int __devinit mdss_dsi_panel_probe(struct platform_device *pdev)
 	int rc = 0;
 	static struct mdss_panel_common_pdata vendor_pdata;
 	static const char *panel_name;
-	const char *driver_name = this_driver.driver.name;
 	bool partial_update_enabled;
+	const char *driver_name = this_driver.driver.name;
 
 	pr_debug("%s:%d, debug info id=%d", __func__, __LINE__, pdev->id);
 	if (!pdev->dev.of_node)
